@@ -487,7 +487,8 @@ def run_audit():
 
     summary = f"Processed: {processed} | Skipped: {skipped} | Failed: {failed}"
     logger.info(f"--- Audit Complete | {summary} ---")
-    send_run_summary(processed, skipped, failed)
+    if processed > 0 or failed > 0:
+        send_run_summary(processed, skipped, failed)
 
 
 if __name__ == "__main__":
