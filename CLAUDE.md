@@ -1,12 +1,14 @@
-# beasync — Claude Code Context
+# bea-tidy — Claude Code Context
 
 ## What this project is
 
-beasync is an AI-powered Plex media library organizer running on a TrueNAS home server.
+bea-tidy is an AI-powered Plex media library organizer running on a TrueNAS home server.
 It uses the Google Gemini API to classify, rename, and sort media files into Plex-standard
 folder structures automatically.
 
 Named after Beatrix (Bea), Nick's wife.
+
+GitHub: https://github.com/nostermayer/bea-tidy
 
 ---
 
@@ -19,7 +21,7 @@ Syncthing (receive-only) -> /mnt/tank/sync
         v
 /mnt/tank/media/Sync
         |
-        | gemini-organizer Docker container (cron at :15 and :45)
+        | organizer Docker container (cron at :15 and :45)
         v
 /mnt/tank/media/
   Movies/
@@ -37,43 +39,75 @@ Syncthing (receive-only) -> /mnt/tank/sync
 
 ## Components
 
+### `lib.py` — Shared library
+- Gemini client setup, all prompt instructions, shared helpers
+- Imported by both organizer.py and cleanup.py
+- Loads `.env` automatically via python-dotenv if present
+
 ### `organizer/` — Continuous sync watcher
 - Runs as a Docker container triggered by cron every 30 minutes (offset by 15 min from sync)
-- Watches `/mnt/tank/media/Sync` for new files/folders
+- Watches `$SYNC_DIR` for new files/folders
 - Classifies each file using Gemini into Movies / TV / Anime Movies / Anime Series
-- Copies files into correct Plex-standard paths under `/mnt/tank/media/`
+- Copies files into correct Plex-standard paths under `$BASE_MEDIA_DIR`
 - Tracks processed files individually (not folders) to handle partial transfers
 - Handles: bare files, single-episode folders, multi-episode folders (e.g. full seasons)
-- Skips: 0-byte files (partial Syncthing transfers), sample/trailer files (Gemini-detected)
+- Skips: 0-byte files, Syncthing `.tmp` files, sample/trailer files (Gemini-detected)
+- Rollback: if any file in a multi-episode folder fails, successfully copied files are removed
+- Summary: logs `Processed: X | Skipped: Y | Failed: Z` at end of each run
+- Notifications: sends run summary to Discord and/or ntfy if configured
 
 ### `cleanup/` — One-shot library cleanup
 - Run manually to fix an existing badly-named library
 - Dry run by default — shows what would change without touching anything
 - `--execute` flag applies changes, with a 5-second countdown abort window
 - `--category Movies` to limit scope
+- `--path /path/to/folder` to target a specific subfolder
 - Every log line prefixed with `[DRY RUN]` or `[EXECUTE]`
 
 ### `scripts/smart-sync.sh` — Smart rsync wrapper
 - Snapshots file mtimes before running rsync
 - Skips rsync entirely if nothing has changed (saves I/O on idle periods)
+- Guards against empty-source wipe (aborts if SYNC_SRC appears empty)
+- Uses flock to prevent overlapping runs
+- Snapshot stored persistently in SYNC_DST (survives reboots)
 - Run every 30 minutes via TrueNAS cron
+
+---
+
+## TMDB enrichment
+
+After every Gemini classification, `tmdb_enrich(ideal, confidence)` in `lib.py` is called:
+
+1. Parses the Gemini-produced Plex path to extract title, year, and category.
+2. Searches the TMDB API (`/search/movie` or `/search/tv`) for the title.
+3. If found: rebuilds the path with TMDB's canonical title and year, upgrades confidence to HIGH.
+4. If not found: returns the Gemini result unchanged.
+5. Silently skips if `TMDB_API_KEY` is not set — fully optional.
+
+This runs **before** the LOW-confidence check, so a TMDB-confirmed result is never
+incorrectly sent to `_review_needed.txt`. Uses stdlib `urllib` — no extra dependency.
 
 ---
 
 ## Gemini API usage
 
-Three types of Gemini calls in organizer.py:
+Three types of Gemini calls in lib.py / organizer.py:
 
-1. **`ask_gemini_classify(filename)`** — classifies a filename into a full Plex path
+1. **`ask_gemini_classify(client, filename)`** — classifies a filename into a full Plex path
    e.g. `jersey.shore.s01e01.dvdrip.avi` → `TV/Jersey Shore/Season 01/Jersey Shore - S01E01.avi`
 
-2. **`ask_gemini_match_folder(title, existing_folders)`** — fuzzy matches a title against
+2. **`ask_gemini_match_folder(client, title, existing_folders)`** — fuzzy matches a title against
    existing library folders to prevent duplicates (e.g. `Euphoria` vs `Euphoria (2019)`)
-   Returns existing folder name or `NEW`
+   Returns existing folder name or `None`
 
-3. **`is_sample_file(filename)`** — determines if a video file is a real episode/movie
+3. **`is_sample_file(client, filename)`** — determines if a video file is a real episode/movie
    or a sample/trailer/extra that should be skipped
-   Returns `REAL` or `SKIP`
+   Returns `True` (skip) or `False` (keep)
+
+cleanup.py adds:
+
+4. **`ask_gemini_compliant(client, relative_path)`** — checks if an existing path already
+   follows Plex conventions. Returns `True` (compliant) or `False` (needs fixing).
 
 All calls use `gemini-2.5-flash` at `temperature=0.0`.
 Free tier: 1,500 requests/day — sufficient for home use.
@@ -81,9 +115,26 @@ Free tier: 1,500 requests/day — sufficient for home use.
 
 ---
 
+## Configuration
+
+All configuration is via environment variables. Copy `.env.example` to `.env`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | (required) | Google Gemini API key |
+| `BASE_MEDIA_DIR` | `/mnt/tank/media` | Root of Plex media library |
+| `SYNC_DIR` | `$BASE_MEDIA_DIR/Sync` | Staging folder organizer watches |
+| `SYNC_SRC` | `/mnt/tank/sync` | Syncthing source (smart-sync.sh) |
+| `SYNC_DST` | `/mnt/tank/media/Sync` | rsync destination (smart-sync.sh) |
+| `DISCORD_WEBHOOK_URL` | (optional) | Discord webhook for run notifications |
+| `NTFY_URL` | (optional) | ntfy topic URL for push notifications |
+| `TMDB_API_KEY` | (optional) | TMDB API key for title/year verification |
+
+---
+
 ## Tracker format
 
-`/mnt/tank/media/.processed_history.txt`
+`$BASE_MEDIA_DIR/.processed_history.txt`
 
 ```
 filename.mkv|1748000000.0|ok
@@ -92,7 +143,8 @@ another.file.avi|1748000001.0|failed
 
 - Keyed by **individual video filename** (not folder name)
 - TTL: 14 days for `ok`, 2 hours for `failed` (retry interval matches cron)
-- Atomic write via `.tmp` swap
+- Loaded once per run (not on every call) and saved atomically via `.tmp` swap
+- Expired entries pruned on load so the file doesn't grow unboundedly
 
 ---
 
@@ -101,42 +153,24 @@ another.file.avi|1748000001.0|failed
 | Schedule | Command |
 |---|---|
 | `*/30 * * * *` | `/mnt/apps-pool/scripts/smart-sync.sh` |
-| `15,45 * * * *` | `docker start gemini-organizer` |
+| `15,45 * * * *` | `docker compose -f /mnt/apps-pool/bea-tidy/docker-compose.yml run --rm organizer` |
 
 ---
 
 ## Docker setup
 
-### Organizer
 ```bash
-cd organizer/
-docker build -t gemini-organizer .
-docker run --rm \
-  --name gemini-organizer \
-  -e GEMINI_API_KEY=your_key \
-  -v /mnt/tank/media:/mnt/tank/media \
-  gemini-organizer
-```
+# Build both images
+docker compose build
 
-### Cleanup
-```bash
-cd cleanup/
-docker build -t gemini-cleanup .
+# Run organizer manually
+docker compose run --rm organizer
 
-# Dry run
-docker run --rm \
-  -e GEMINI_API_KEY=your_key \
-  -v /mnt/tank/media:/mnt/tank/media \
-  gemini-cleanup
+# Cleanup dry run
+docker compose --profile cleanup run --rm cleanup
 
-# Execute
-docker run --rm \
-  -e GEMINI_API_KEY=your_key \
-  -v /mnt/tank/media:/mnt/tank/media \
-  gemini-cleanup --execute
-
-# Single category
-docker run --rm ... gemini-cleanup --category Movies
+# Cleanup execute
+docker compose --profile cleanup run --rm cleanup --execute
 ```
 
 ---
@@ -158,34 +192,24 @@ docker run --rm ... gemini-cleanup --category Movies
 
 ---
 
-## Planned improvements (not yet implemented)
-
-1. Syncthing completion detection (check for `.syncthing.*.tmp` files)
-2. Rollback on partial multi-episode folder failure
-3. Run summary at end of each audit (Processed: X | Skipped: Y | Failed: Z)
-4. Ntfy or Discord webhook notification with run summary
-5. Confidence scoring — flag low-confidence classifications for manual review
-6. Cross-category mismatch flagging (e.g. file in Movies/ that Gemini thinks is TV)
-7. GitHub Actions — auto-build and push Docker image to GHCR on push to main
-8. `.env` file support instead of passing API key on command line
-9. General library cleanup mode with `--path` argument for targeted cleanup
-
----
-
 ## Known edge cases handled
 
 - Multi-episode folders (full seasons dumped in one folder) — each file processed individually
 - 0-byte files from partial Syncthing transfers — skipped, retried next run
+- Syncthing `.syncthing.*.tmp` files — folder skipped until transfer completes
 - Sample/trailer files — Gemini-detected and skipped
 - Duplicate show folders with year variants — fuzzy matched and renamed to Plex standard
 - Sidecar files (`.nfo`, `.srt`, `.sfv`) — copied alongside their matching video
 - `Subs/` subdirectories — recursively copied
+- Partial multi-episode folder failure — rolled back, full retry next run
+- Empty Syncthing source (unmounted drive) — rsync aborted, destination protected
 
 ## Tech stack
 
 - Python 3.12
 - google-genai SDK
-- Docker (python:3.12-slim base)
+- python-dotenv
+- Docker / docker-compose
 - TrueNAS SCALE (host)
 - Syncthing (receive-only sync source)
 - Plex Media Server

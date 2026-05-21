@@ -1,0 +1,22 @@
+services:
+  organizer:
+    build:
+      context: .
+      dockerfile: organizer/Dockerfile
+    env_file: .env
+    volumes:
+      - ${BASE_MEDIA_DIR:-/mnt/tank/media}:${BASE_MEDIA_DIR:-/mnt/tank/media}
+    restart: "no"  # triggered by cron, not kept running
+
+  cleanup:
+    build:
+      context: .
+      dockerfile: cleanup/Dockerfile
+    env_file: .env
+    volumes:
+      - ${BASE_MEDIA_DIR:-/mnt/tank/media}:${BASE_MEDIA_DIR:-/mnt/tank/media}
+    profiles:
+      - cleanup  # only started explicitly: docker compose --profile cleanup run cleanup
+    # Pass --execute to apply changes; dry run by default
+    # docker compose --profile cleanup run cleanup --execute
+    # docker compose --profile cleanup run cleanup --category Movies

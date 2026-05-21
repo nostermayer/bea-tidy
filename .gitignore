@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .env
 .env.*
+!.env.example
 *.log
 .processed_history.txt
 .DS_Store

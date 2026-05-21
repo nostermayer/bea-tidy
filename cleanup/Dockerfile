@@ -1,5 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir google-genai
+RUN pip install --no-cache-dir google-genai python-dotenv
+COPY ../lib.py .
 COPY cleanup.py .
 ENTRYPOINT ["python3", "cleanup.py"]
