@@ -113,20 +113,43 @@ class TestMoveSidecars:
         d.mkdir()
         srt = d / "show.s01e01.srt"
         srt.write_text("sub")
-        cleanup.move_sidecars(str(d), str(d), "show.s01e01", dry_run=False, mode_tag="[TEST]")
+        cleanup.move_sidecars(str(d), str(d), "show.s01e01", "Show - S01E01",
+                              dry_run=False, mode_tag="[TEST]")
         assert srt.exists()
 
-    def test_moves_matching_sidecar(self, tmp_path):
+    def test_subtitle_renamed_to_ideal_stem(self, tmp_path):
         src_dir  = tmp_path / "src"
         dest_dir = tmp_path / "dest"
         src_dir.mkdir()
         dest_dir.mkdir()
-        srt = src_dir / "badly.named.s01e01.srt"
+        srt = src_dir / "badly.named.s01e01.en.srt"
         srt.write_text("sub")
         cleanup.move_sidecars(str(src_dir), str(dest_dir), "badly.named.s01e01",
-                              dry_run=False, mode_tag="[TEST]")
-        assert (dest_dir / "badly.named.s01e01.srt").exists()
+                              "Show Name - S01E01", dry_run=False, mode_tag="[TEST]")
+        assert (dest_dir / "Show Name - S01E01.en.srt").exists()
         assert not srt.exists()
+
+    def test_subtitle_no_lang_suffix(self, tmp_path):
+        src_dir  = tmp_path / "src"
+        dest_dir = tmp_path / "dest"
+        src_dir.mkdir()
+        dest_dir.mkdir()
+        srt = src_dir / "movie.srt"
+        srt.write_text("sub")
+        cleanup.move_sidecars(str(src_dir), str(dest_dir), "movie",
+                              "Good Movie (2020)", dry_run=False, mode_tag="[TEST]")
+        assert (dest_dir / "Good Movie (2020).srt").exists()
+
+    def test_nfo_keeps_original_name(self, tmp_path):
+        src_dir  = tmp_path / "src"
+        dest_dir = tmp_path / "dest"
+        src_dir.mkdir()
+        dest_dir.mkdir()
+        nfo = src_dir / "badly.named.movie.nfo"
+        nfo.write_text("<nfo/>")
+        cleanup.move_sidecars(str(src_dir), str(dest_dir), "badly.named.movie",
+                              "Good Movie (2020)", dry_run=False, mode_tag="[TEST]")
+        assert (dest_dir / "badly.named.movie.nfo").exists()
 
     def test_skips_video_files(self, tmp_path):
         src_dir  = tmp_path / "src"
@@ -136,7 +159,7 @@ class TestMoveSidecars:
         vid = src_dir / "other.episode.mkv"
         vid.write_bytes(b"video")
         cleanup.move_sidecars(str(src_dir), str(dest_dir), "other.episode",
-                              dry_run=False, mode_tag="[TEST]")
+                              "Other Episode", dry_run=False, mode_tag="[TEST]")
         assert vid.exists()
         assert not (dest_dir / "other.episode.mkv").exists()
 
@@ -148,7 +171,7 @@ class TestMoveSidecars:
         unrelated = src_dir / "readme.txt"
         unrelated.write_text("hi")
         cleanup.move_sidecars(str(src_dir), str(dest_dir), "movie.2020",
-                              dry_run=False, mode_tag="[TEST]")
+                              "Movie (2020)", dry_run=False, mode_tag="[TEST]")
         assert unrelated.exists()
 
     def test_moves_subs_directory(self, tmp_path):
@@ -160,7 +183,7 @@ class TestMoveSidecars:
         subs.mkdir()
         (subs / "en.srt").write_text("sub")
         cleanup.move_sidecars(str(src_dir), str(dest_dir), "movie",
-                              dry_run=False, mode_tag="[TEST]")
+                              "Good Movie (2020)", dry_run=False, mode_tag="[TEST]")
         assert (dest_dir / "Subs" / "en.srt").exists()
         assert not subs.exists()
 
@@ -172,11 +195,11 @@ class TestMoveSidecars:
         srt = src_dir / "movie.srt"
         srt.write_text("sub")
         cleanup.move_sidecars(str(src_dir), str(dest_dir), "movie",
-                              dry_run=True, mode_tag="[DRY RUN]")
+                              "Good Movie (2020)", dry_run=True, mode_tag="[DRY RUN]")
         assert srt.exists()
-        assert not (dest_dir / "movie.srt").exists()
+        assert not (dest_dir / "Good Movie (2020).srt").exists()
 
-    def test_double_extension_sidecar(self, tmp_path):
+    def test_double_extension_nfo_keeps_name(self, tmp_path):
         src_dir  = tmp_path / "src"
         dest_dir = tmp_path / "dest"
         src_dir.mkdir()
@@ -184,7 +207,7 @@ class TestMoveSidecars:
         nfo = src_dir / "movie.mp4.nfo"
         nfo.write_text("<nfo/>")
         cleanup.move_sidecars(str(src_dir), str(dest_dir), "movie",
-                              dry_run=False, mode_tag="[TEST]")
+                              "Good Movie (2020)", dry_run=False, mode_tag="[TEST]")
         assert (dest_dir / "movie.mp4.nfo").exists()
 
 
@@ -387,6 +410,7 @@ class TestRunFromCsv:
         src_dir.mkdir(parents=True)
         (src_dir / "bad.mkv").write_bytes(b"video")
         (src_dir / "bad.en.srt").write_text("sub")
+        (src_dir / "bad.nfo").write_text("<nfo/>")
 
         csv_path = tmp_path / "cleanup_plan.csv"
         self._write_csv(str(csv_path), [{
@@ -404,4 +428,5 @@ class TestRunFromCsv:
         cleanup.run_from_csv(args)
         dest_dir = tmp_path / "Movies" / "Good (2020)"
         assert (dest_dir / "Good (2020).mkv").exists()
-        assert (dest_dir / "bad.en.srt").exists()
+        assert (dest_dir / "Good (2020).en.srt").exists()  # subtitle renamed
+        assert (dest_dir / "bad.nfo").exists()              # nfo keeps original name

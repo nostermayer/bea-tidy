@@ -127,8 +127,15 @@ def safe_rename(src, dest, dry_run):
         return False
 
 
-def move_sidecars(src_dir, dest_dir, video_stem, dry_run, mode_tag):
-    """Move sidecar files (same stem, non-video) and Subs/ dir when the directory changes."""
+SUBTITLE_EXTENSIONS = {'.srt', '.sub', '.ass', '.ssa', '.vtt', '.idx', '.sup', '.smi'}
+
+
+def move_sidecars(src_dir, dest_dir, video_stem, ideal_stem, dry_run, mode_tag):
+    """Move sidecar files (same stem, non-video) and Subs/ dir when the directory changes.
+
+    Subtitle files (.srt etc.) are renamed to match ideal_stem so Plex auto-matches them.
+    Other sidecars (.nfo etc.) keep their original names.
+    """
     if src_dir == dest_dir:
         return
 
@@ -136,22 +143,34 @@ def move_sidecars(src_dir, dest_dir, video_stem, dry_run, mode_tag):
     for f in sorted(os.listdir(src_dir)):
         if f.startswith('.'):
             continue
-        if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS:
+        ext = os.path.splitext(f)[1].lower()
+        if ext in VIDEO_EXTENSIONS:
             continue
         if os.path.isdir(os.path.join(src_dir, f)):
             continue
-        if os.path.splitext(f)[0].lower().startswith(stem_lower):
-            src_path  = os.path.join(src_dir, f)
-            dest_path = os.path.join(dest_dir, f)
-            if dry_run:
-                logger.info(f"{mode_tag}   SIDECAR: {f}")
-            else:
-                try:
-                    os.makedirs(dest_dir, exist_ok=True)
-                    os.rename(src_path, dest_path)
-                    logger.info(f"  Moved sidecar: {f}")
-                except Exception as e:
-                    logger.warning(f"  Failed to move sidecar {f}: {e}")
+        sidecar_stem = os.path.splitext(f)[0]
+        if not sidecar_stem.lower().startswith(stem_lower):
+            continue
+
+        if ext in SUBTITLE_EXTENSIONS:
+            lang_suffix = sidecar_stem[len(video_stem):]  # e.g. '.en' or ''
+            dest_name = ideal_stem + lang_suffix + ext
+        else:
+            dest_name = f
+
+        src_path  = os.path.join(src_dir, f)
+        dest_path = os.path.join(dest_dir, dest_name)
+        if dry_run:
+            logger.info(f"{mode_tag}   SIDECAR: {f} -> {dest_name}" if dest_name != f else
+                        f"{mode_tag}   SIDECAR: {f}")
+        else:
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                os.rename(src_path, dest_path)
+                logger.info(f"  Moved sidecar: {f} -> {dest_name}" if dest_name != f else
+                            f"  Moved sidecar: {f}")
+            except Exception as e:
+                logger.warning(f"  Failed to move sidecar {f}: {e}")
 
     subs_src  = os.path.join(src_dir, "Subs")
     subs_dest = os.path.join(dest_dir, "Subs")
@@ -236,12 +255,13 @@ def process_video_file(client, video_path, base_media_dir, category, dry_run, mo
                    confidence=confidence, notes="Destination path already occupied")
         return
 
-    src_dir  = os.path.dirname(video_path)
-    dest_dir = os.path.dirname(ideal_abs)
+    src_dir    = os.path.dirname(video_path)
+    dest_dir   = os.path.dirname(ideal_abs)
+    ideal_stem = os.path.splitext(os.path.basename(ideal_abs))[0]
 
     logger.info(f"{mode_tag}   FROM: {relative_path}")
     logger.info(f"{mode_tag}   TO:   {ideal}")
-    move_sidecars(src_dir, dest_dir, video_stem, dry_run, mode_tag)
+    move_sidecars(src_dir, dest_dir, video_stem, ideal_stem, dry_run, mode_tag)
     report.add("RENAME", relative_path, proposed_path=ideal, confidence=confidence)
 
     if not dry_run:
@@ -332,10 +352,11 @@ def run_from_csv(args):
         src_dir    = os.path.dirname(src_abs)
         dest_dir   = os.path.dirname(dest_abs)
         video_stem = os.path.splitext(os.path.basename(src_abs))[0]
+        ideal_stem = os.path.splitext(os.path.basename(dest_abs))[0]
 
         logger.info(f"{mode_tag}   FROM: {current_rel}")
         logger.info(f"{mode_tag}   TO:   {proposed_rel}")
-        move_sidecars(src_dir, dest_dir, video_stem, dry_run, mode_tag)
+        move_sidecars(src_dir, dest_dir, video_stem, ideal_stem, dry_run, mode_tag)
         report.add("RENAME", current_rel, proposed_path=proposed_rel,
                    confidence=row.get("confidence", ""))
         affected_dirs.add(src_dir)
