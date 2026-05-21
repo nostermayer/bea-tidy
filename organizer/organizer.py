@@ -9,7 +9,7 @@ from lib import (
     ask_gemini_classify, ask_gemini_match_folder, is_sample_file,
     apply_open_permissions, check_category, tmdb_enrich,
 )
-from notify import send_run_summary
+from notify import send_run_summary, send_file_added
 
 # ---------------------------------------------------------------------------
 # Configuration — override via environment variables
@@ -220,7 +220,7 @@ def resolve_path(ideal):
 # File helpers
 # ---------------------------------------------------------------------------
 
-def find_all_videos(folder_path):
+def find_all_videos(folder_path, records):
     """Return (abs_path, filename) for all real, ready video files in folder."""
     videos = []
     for root, dirs, files in os.walk(folder_path):
@@ -232,6 +232,8 @@ def find_all_videos(folder_path):
                 continue
             abs_path = os.path.join(root, f)
             if not is_file_ready(abs_path):
+                continue
+            if is_already_processed(records, f):
                 continue
             if is_sample_file(client, f):
                 continue
@@ -378,6 +380,7 @@ def run_audit():
                 if ok:
                     logger.info(f"Copied: {item} -> {ideal}")
                     mark_processed(records, item, status="ok")
+                    send_file_added(ideal)
                     processed += 1
                 else:
                     logger.error(f"Integrity check failed for: {item} — will retry next run")
@@ -394,7 +397,7 @@ def run_audit():
                 skipped += 1
                 continue
 
-            videos = find_all_videos(item_path)
+            videos = find_all_videos(item_path, records)
             if not videos:
                 logger.info(f"No video found in folder (may still be transferring): {item}")
                 skipped += 1
@@ -405,11 +408,8 @@ def run_audit():
                 logger.info(f"Multi-episode folder: {item} ({len(videos)} videos)")
                 folder_ok = True
                 newly_copied = []
+                newly_added_ideals = []
                 for video_abs, video_filename in videos:
-                    if is_already_processed(records, video_filename):
-                        logger.info(f"  SKIP (already processed): {video_filename}")
-                        skipped += 1
-                        continue
                     logger.info(f"  Classifying: {video_filename}")
                     ideal, confidence = ask_gemini_classify(client, video_filename)
                     if not ideal:
@@ -434,6 +434,7 @@ def run_audit():
                     if ok:
                         mark_processed(records, video_filename, status="ok")
                         newly_copied.append(os.path.join(BASE_MEDIA_DIR, ideal))
+                        newly_added_ideals.append(ideal)
                         processed += 1
                     else:
                         mark_processed(records, video_filename, status="failed")
@@ -449,14 +450,13 @@ def run_audit():
                             logger.info(f"  Rolled back: {copied_path}")
                         except Exception as e:
                             logger.error(f"  Rollback failed for {copied_path}: {e}")
+                elif folder_ok:
+                    for ideal in newly_added_ideals:
+                        send_file_added(ideal)
 
             # Single-episode folder — tracked by video filename
             else:
                 video_abs, video_filename = videos[0]
-                if is_already_processed(records, video_filename):
-                    logger.info(f"SKIP (already processed): {video_filename}")
-                    skipped += 1
-                    continue
                 logger.info(f"Classifying folder: {item} (anchor: {video_filename})")
                 ideal, confidence = ask_gemini_classify(client, video_filename)
                 if not ideal:
@@ -477,6 +477,7 @@ def run_audit():
                 if ok:
                     logger.info(f"Copied folder: {item} -> {ideal}")
                     mark_processed(records, video_filename, status="ok")
+                    send_file_added(ideal)
                     processed += 1
                 else:
                     logger.error(f"Partial copy failure for folder: {item} — marking failed")

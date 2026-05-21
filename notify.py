@@ -27,6 +27,50 @@ def _post_text(url, text, headers=None):
         return resp.status
 
 
+def send_file_added(ideal_path):
+    """Fire a per-file notification when a file is successfully added to Plex."""
+    discord_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    ntfy_url    = os.getenv("NTFY_URL", "").strip()
+
+    if not discord_url and not ntfy_url:
+        return
+
+    category = ideal_path.split("/")[0] if "/" in ideal_path else ""
+    icons = {
+        "Movies":       "🎬",
+        "Anime Movies": "🎬",
+        "TV":           "📺",
+        "Anime Series": "📺",
+    }
+    icon  = icons.get(category, "📁")
+    title = f"{icon} Added to Plex"
+
+    if discord_url:
+        try:
+            colours = {
+                "Movies":       0x5865F2,
+                "Anime Movies": 0xEB459E,
+                "TV":           0x57F287,
+                "Anime Series": 0xFEE75C,
+            }
+            payload = {
+                "embeds": [{
+                    "title":       title,
+                    "description": f"`{ideal_path}`",
+                    "color":       colours.get(category, 0x95A5A6),
+                }]
+            }
+            _post_json(discord_url, payload)
+        except Exception as e:
+            logger.warning(f"Discord file-added notification failed: {e}")
+
+    if ntfy_url:
+        try:
+            _post_text(ntfy_url, ideal_path, {"Title": title, "Tags": "white_check_mark"})
+        except Exception as e:
+            logger.warning(f"ntfy file-added notification failed: {e}")
+
+
 def send_run_summary(processed, skipped, failed, failures=None):
     """
     Fire run summary to Discord and/or ntfy, whichever env vars are set.
