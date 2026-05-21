@@ -36,8 +36,8 @@ if [ -f "$SNAPSHOT" ]; then
 fi
 
 echo "$(date): Changes detected, running rsync..."
-chmod -R 775 "$SYNC_DST"
 rsync -rvtc --delete --exclude='.*' "$SYNC_SRC/" "$SYNC_DST"
+chmod -R 775 "$SYNC_DST"
 
 if [ $? -eq 0 ]; then
     echo "$CURRENT" > "$SNAPSHOT"
