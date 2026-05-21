@@ -23,9 +23,9 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from lib import (
-    VIDEO_EXTENSIONS, CATEGORIES, GEMINI_MODEL, GEMINI_RATE_SLEEP,
+    VIDEO_EXTENSIONS, CATEGORIES, GEMINI_MODEL, GEMINI_RATE_SLEEP, GEMINI_MAX_ATTEMPTS,
     CLASSIFY_INSTRUCTION, make_client, ask_gemini_classify, apply_open_permissions,
-    tmdb_enrich,
+    tmdb_enrich, _gemini_backoff,
 )
 from google.genai import types
 
@@ -92,7 +92,7 @@ def ask_gemini_compliant(client, relative_path):
         system_instruction=CHECK_COMPLIANT_INSTRUCTION,
         temperature=0.0
     )
-    for attempt in range(3):
+    for attempt in range(GEMINI_MAX_ATTEMPTS):
         try:
             time.sleep(GEMINI_RATE_SLEEP)
             response = client.models.generate_content(
@@ -100,8 +100,8 @@ def ask_gemini_compliant(client, relative_path):
             )
             return response.text.strip() == "COMPLIANT"
         except Exception as e:
-            logger.warning(f"Compliance check retry {attempt + 1} for {relative_path}: {e}")
-            time.sleep(2 ** attempt)
+            if not _gemini_backoff(e, attempt, relative_path):
+                break
     return False
 
 

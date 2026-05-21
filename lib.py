@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.error
 from google import genai
 from google.genai import types
+from google.genai.errors import ClientError, ServerError
 
 try:
     from dotenv import load_dotenv
@@ -22,6 +23,31 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_RATE_SLEEP = 4.5  # stay well under free-tier RPM limit
 
 CATEGORIES = ["Movies", "TV", "Anime Movies", "Anime Series"]
+
+GEMINI_MAX_ATTEMPTS = 3
+
+
+def _gemini_backoff(e, attempt, context):
+    """Log and sleep based on error type. Returns False if the error is fatal (no point retrying)."""
+    if isinstance(e, ClientError):
+        if e.code in (401, 403):
+            logger.error(f"Gemini auth error for '{context}' — check GEMINI_API_KEY: {e}")
+            return False
+        if e.code == 429:
+            wait = 60 * (attempt + 1)
+            logger.warning(f"Gemini rate limited for '{context}' (attempt {attempt + 1}/{GEMINI_MAX_ATTEMPTS}) — waiting {wait}s")
+            time.sleep(wait)
+            return True
+        logger.warning(f"Gemini client error for '{context}' (attempt {attempt + 1}/{GEMINI_MAX_ATTEMPTS}): {e}")
+        time.sleep(2 ** attempt)
+    elif isinstance(e, ServerError):
+        wait = 2 ** (attempt + 1)
+        logger.warning(f"Gemini server error for '{context}' (attempt {attempt + 1}/{GEMINI_MAX_ATTEMPTS}) — waiting {wait}s: {e}")
+        time.sleep(wait)
+    else:
+        logger.warning(f"Gemini error for '{context}' (attempt {attempt + 1}/{GEMINI_MAX_ATTEMPTS}): {e}")
+        time.sleep(2 ** attempt)
+    return True
 
 CLASSIFY_INSTRUCTION = """You are a media file classifier that outputs Plex-compatible folder paths.
 
@@ -157,7 +183,7 @@ def ask_gemini_classify(client, filename):
         system_instruction=CLASSIFY_INSTRUCTION,
         temperature=0.0
     )
-    for attempt in range(3):
+    for attempt in range(GEMINI_MAX_ATTEMPTS):
         try:
             time.sleep(GEMINI_RATE_SLEEP)
             response = client.models.generate_content(
@@ -173,8 +199,8 @@ def ask_gemini_classify(client, filename):
                 return path, confidence
             logger.warning(f"Gemini classify response invalid — raw: {repr(response.text)}")
         except Exception as e:
-            logger.warning(f"Classify retry {attempt + 1} for {filename}: {e}")
-            time.sleep(2 ** attempt)
+            if not _gemini_backoff(e, attempt, filename):
+                break
     return None, None
 
 
@@ -187,7 +213,7 @@ def ask_gemini_match_folder(client, title, existing_folders):
         system_instruction=FOLDER_MATCH_INSTRUCTION,
         temperature=0.0
     )
-    for attempt in range(3):
+    for attempt in range(GEMINI_MAX_ATTEMPTS):
         try:
             time.sleep(GEMINI_RATE_SLEEP)
             response = client.models.generate_content(
@@ -201,8 +227,8 @@ def ask_gemini_match_folder(client, title, existing_folders):
                 return result
             logger.warning(f"Gemini returned folder not in list: {repr(result)}")
         except Exception as e:
-            logger.warning(f"Folder match retry {attempt + 1}: {e}")
-            time.sleep(2 ** attempt)
+            if not _gemini_backoff(e, attempt, title):
+                break
     return None
 
 
@@ -212,19 +238,22 @@ def is_sample_file(client, filename):
         system_instruction=SAMPLE_CHECK_INSTRUCTION,
         temperature=0.0
     )
-    try:
-        time.sleep(GEMINI_RATE_SLEEP)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL, contents=prompt, config=config
-        )
-        result = response.text.strip()
-        if result == "SKIP":
-            logger.info(f"Gemini flagged as sample/extra, skipping: {filename}")
-            return True
-        return False
-    except Exception as e:
-        logger.warning(f"Sample check failed for {filename}: {e} — treating as real")
-        return False
+    for attempt in range(GEMINI_MAX_ATTEMPTS):
+        try:
+            time.sleep(GEMINI_RATE_SLEEP)
+            response = client.models.generate_content(
+                model=GEMINI_MODEL, contents=prompt, config=config
+            )
+            result = response.text.strip()
+            if result == "SKIP":
+                logger.info(f"Gemini flagged as sample/extra, skipping: {filename}")
+                return True
+            return False
+        except Exception as e:
+            if not _gemini_backoff(e, attempt, filename):
+                break
+    logger.warning(f"Sample check failed for '{filename}' after retries — treating as real file")
+    return False
 
 
 TMDB_BASE = "https://api.themoviedb.org/3"
