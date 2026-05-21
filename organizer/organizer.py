@@ -220,6 +220,20 @@ def resolve_path(ideal):
 # File helpers
 # ---------------------------------------------------------------------------
 
+def has_any_videos(folder_path):
+    """Return True if the folder contains at least one ready video file (ignores tracker)."""
+    for root, dirs, files in os.walk(folder_path):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for f in files:
+            if f.startswith('.'):
+                continue
+            if os.path.splitext(f)[1].lower() not in VIDEO_EXTENSIONS:
+                continue
+            if is_file_ready(os.path.join(root, f)):
+                return True
+    return False
+
+
 def find_all_videos(folder_path, records):
     """Return (abs_path, filename) for all real, ready video files in folder."""
     videos = []
@@ -339,6 +353,7 @@ def run_audit():
     records = load_tracker()
 
     processed = skipped = failed = 0
+    failures = []
 
     for item in sorted(os.listdir(sync_folder)):
         if item.startswith('.'):
@@ -364,6 +379,7 @@ def run_audit():
             if not ideal:
                 logger.warning(f"No usable Plex path for: {item} — marking failed")
                 mark_processed(records, item, status="failed")
+                failures.append(item)
                 failed += 1
                 continue
             ideal, confidence = tmdb_enrich(ideal, confidence)
@@ -384,6 +400,7 @@ def run_audit():
                     processed += 1
                 else:
                     logger.error(f"Integrity check failed for: {item} — will retry next run")
+                    failures.append(item)
                     failed += 1
             else:
                 logger.info(f"Destination already exists, skipping: {dest}")
@@ -399,7 +416,10 @@ def run_audit():
 
             videos = find_all_videos(item_path, records)
             if not videos:
-                logger.info(f"No video found in folder (may still be transferring): {item}")
+                if has_any_videos(item_path):
+                    logger.info(f"SKIP (all files already processed): {item}")
+                else:
+                    logger.info(f"No video found in folder (may still be transferring): {item}")
                 skipped += 1
                 continue
 
@@ -415,6 +435,7 @@ def run_audit():
                     if not ideal:
                         logger.warning(f"  No usable Plex path for: {video_filename} — marking failed")
                         mark_processed(records, video_filename, status="failed")
+                        failures.append(video_filename)
                         failed += 1
                         folder_ok = False
                         continue
@@ -438,6 +459,7 @@ def run_audit():
                         processed += 1
                     else:
                         mark_processed(records, video_filename, status="failed")
+                        failures.append(video_filename)
                         failed += 1
                         folder_ok = False
 
@@ -462,6 +484,7 @@ def run_audit():
                 if not ideal:
                     logger.warning(f"No usable Plex path for folder: {item} — marking failed")
                     mark_processed(records, video_filename, status="failed")
+                    failures.append(item)
                     failed += 1
                     continue
                 ideal, confidence = tmdb_enrich(ideal, confidence)
@@ -482,6 +505,7 @@ def run_audit():
                 else:
                     logger.error(f"Partial copy failure for folder: {item} — marking failed")
                     mark_processed(records, video_filename, status="failed")
+                    failures.append(item)
                     failed += 1
 
     save_tracker(records)
@@ -489,7 +513,7 @@ def run_audit():
     summary = f"Processed: {processed} | Skipped: {skipped} | Failed: {failed}"
     logger.info(f"--- Audit Complete | {summary} ---")
     if processed > 0 or failed > 0:
-        send_run_summary(processed, skipped, failed)
+        send_run_summary(processed, skipped, failed, failures=failures)
 
 
 if __name__ == "__main__":
