@@ -20,7 +20,7 @@ def _post_json(url, payload, headers=None):
 def _post_text(url, text, headers=None):
     data = text.encode()
     req  = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "text/plain")
+    req.add_header("Content-Type", "text/plain; charset=utf-8")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=10) as resp:
@@ -66,7 +66,7 @@ def send_file_added(ideal_path):
 
     if ntfy_url:
         try:
-            _post_text(ntfy_url, ideal_path, {"Title": title, "Tags": "white_check_mark"})
+            _post_text(ntfy_url, f"{icon} {ideal_path}", {"Title": "Added to Plex", "Tags": "white_check_mark"})
         except Exception as e:
             logger.warning(f"ntfy file-added notification failed: {e}")
 
@@ -110,10 +110,11 @@ def send_run_summary(processed, skipped, failed, failures=None):
         try:
             body    = summary + ("\n\nFailed files:\n" + "\n".join(failures) if failures else "")
             headers = {
-                "Title":    title,
+                "Title":    "bea-tidy run complete",
                 "Priority": "default" if failed == 0 else "high",
                 "Tags":     "white_check_mark" if failed == 0 else "warning",
             }
+            body = f"{status_emoji} {body}"
             _post_text(ntfy_url, body, headers)
             logger.info("ntfy notification sent.")
         except urllib.error.URLError as e:
