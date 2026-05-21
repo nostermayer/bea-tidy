@@ -279,6 +279,88 @@ def process_category(client, category, category_path, base_media_dir, dry_run, m
 
 
 # ---------------------------------------------------------------------------
+# CSV-driven apply — no Gemini calls
+# ---------------------------------------------------------------------------
+
+def run_from_csv(args):
+    base_media_dir = os.getenv("BASE_MEDIA_DIR", "/mnt/tank/media")
+    dry_run  = not args.execute
+    mode_tag = "[DRY RUN]" if dry_run else "[EXECUTE]"
+    report   = Report()
+
+    csv_path = args.from_csv if args.from_csv != "__default__" \
+        else os.path.join(base_media_dir, "cleanup_plan.csv")
+
+    if not os.path.exists(csv_path):
+        logger.error(f"CSV not found: {csv_path}")
+        sys.exit(1)
+
+    logger.info(f"Applying plan from: {csv_path}")
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    rename_rows = [r for r in rows if r["action"] == "RENAME"]
+    skipped_rows = [r for r in rows if r["action"].startswith("SKIP_")]
+    logger.info(f"Found {len(rename_rows)} RENAME(s), {len(skipped_rows)} previously skipped")
+
+    affected_dirs = set()
+
+    for row in rename_rows:
+        current_rel  = row["current_path"]
+        proposed_rel = row["proposed_path"]
+
+        if not current_rel or not proposed_rel:
+            logger.warning(f"Incomplete row, skipping: {row}")
+            continue
+
+        src_abs  = os.path.join(base_media_dir, current_rel)
+        dest_abs = os.path.join(base_media_dir, proposed_rel)
+
+        if not os.path.exists(src_abs):
+            logger.warning(f"{mode_tag} Source not found, skipping: {current_rel}")
+            report.add("SKIP_NOT_FOUND", current_rel, proposed_path=proposed_rel,
+                       notes="Source file missing — already moved?")
+            continue
+
+        if os.path.exists(dest_abs):
+            logger.warning(f"{mode_tag} Destination exists, skipping: {proposed_rel}")
+            report.add("SKIP_DEST_EXISTS", current_rel, proposed_path=proposed_rel,
+                       notes="Destination path already occupied")
+            continue
+
+        src_dir    = os.path.dirname(src_abs)
+        dest_dir   = os.path.dirname(dest_abs)
+        video_stem = os.path.splitext(os.path.basename(src_abs))[0]
+
+        logger.info(f"{mode_tag}   FROM: {current_rel}")
+        logger.info(f"{mode_tag}   TO:   {proposed_rel}")
+        move_sidecars(src_dir, dest_dir, video_stem, dry_run, mode_tag)
+        report.add("RENAME", current_rel, proposed_path=proposed_rel,
+                   confidence=row.get("confidence", ""))
+        affected_dirs.add(src_dir)
+
+        if not dry_run:
+            ok = safe_rename(src_abs, dest_abs, dry_run=False)
+            if not ok:
+                report.rows[-1]["action"] = "RENAME_FAILED"
+                report.counts["RENAME"] -= 1
+                report.counts["RENAME_FAILED"] = report.counts.get("RENAME_FAILED", 0) + 1
+
+    # Clean up empty dirs left behind
+    for d in affected_dirs:
+        cleanup_empty_dirs(d, dry_run)
+
+    out_csv = os.path.join(base_media_dir, "cleanup_applied.csv")
+    report.write(out_csv)
+    report.log_summary()
+    logger.info("--- Apply Complete ---")
+    if dry_run:
+        logger.info("This was a DRY RUN — nothing was changed.")
+        logger.info("Rerun with --execute to apply changes.")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -347,9 +429,31 @@ def main():
                         help="Limit to one category e.g. Movies")
     parser.add_argument("--path", type=str, default=None,
                         help="Target a specific folder path for cleanup")
+    parser.add_argument("--from-csv", nargs="?", const="__default__", default=None,
+                        metavar="PATH",
+                        help="Apply renames from a previous dry-run CSV instead of re-querying Gemini. "
+                             "Optionally specify a CSV path (default: cleanup_plan.csv in BASE_MEDIA_DIR).")
     args = parser.parse_args()
 
     dry_run = not args.execute
+
+    if args.from_csv is not None:
+        if dry_run:
+            print("\n" + "=" * 60)
+            print("  DRY RUN MODE (from CSV)")
+            print("  No files will be renamed, moved, or deleted.")
+            print("=" * 60 + "\n")
+        else:
+            print("\n" + "!" * 60)
+            print("  EXECUTE MODE — FILES WILL BE RENAMED/MOVED")
+            print("  Starting in 5 seconds. Press Ctrl+C to abort.")
+            print("!" * 60 + "\n")
+            for i in range(5, 0, -1):
+                print(f"  {i}...")
+                time.sleep(1)
+            print("  Proceeding.\n")
+        run_from_csv(args)
+        return
 
     if dry_run:
         print("\n" + "=" * 60)
